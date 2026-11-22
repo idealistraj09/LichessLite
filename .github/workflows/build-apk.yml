@@ -5,7 +5,7 @@ on:
   push:
     branches: [main]
     paths:
-      - 'LichessLite-AndroidStudio.zip'
+      - 'LichessLite*.zip'
       - '.github/workflows/build-apk.yml'
       - 'app/**'
       - 'build.gradle.kts'
@@ -20,16 +20,40 @@ jobs:
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
-      - name: Unpack uploaded project ZIP if present
+      - name: Locate Android Gradle project
         shell: bash
         run: |
           set -euo pipefail
-          if [ -f LichessLite-AndroidStudio.zip ]; then
-            unzip -q LichessLite-AndroidStudio.zip
-            echo "PROJECT_DIR=$GITHUB_WORKSPACE/LichessLite" >> "$GITHUB_ENV"
-          else
-            echo "PROJECT_DIR=$GITHUB_WORKSPACE" >> "$GITHUB_ENV"
-          fi
+          python3 - <<'PYCODE'
+          import os, pathlib, zipfile
+          root = pathlib.Path(os.environ['GITHUB_WORKSPACE'])
+          # Prefer the exact repository upload name; also accept v0.3 named ZIPs.
+          files = [root / 'LichessLite-AndroidStudio.zip']
+          files += sorted(root.glob('LichessLite-AndroidStudio*.zip'), key=lambda p: p.stat().st_mtime, reverse=True)
+          files += sorted(root.glob('LichessLite*.zip'), key=lambda p: p.stat().st_mtime, reverse=True)
+          archives = list(dict.fromkeys(p for p in files if p.is_file()))
+          if archives:
+              archive = archives[0]
+              print('Extracting:', archive.name)
+              with zipfile.ZipFile(archive) as z:
+                  for member in z.infolist():
+                      relative = pathlib.PurePosixPath(member.filename)
+                      if member.filename.startswith('/') or '..' in relative.parts:
+                          raise RuntimeError('Unsafe ZIP entry: ' + member.filename)
+                  z.extractall(root)
+          candidates = [p.parent for p in root.rglob('settings.gradle.kts')]
+          candidates += [p.parent for p in root.rglob('settings.gradle')]
+          candidates = [p for p in candidates if (p / 'app' / 'build.gradle.kts').exists() or (p / 'app' / 'build.gradle').exists()]
+          if not candidates:
+              raise SystemExit('No Gradle Android project found. Upload the complete LichessLite project ZIP, including settings.gradle.kts.')
+          candidates.sort(key=lambda p: (p != root / 'LichessLite', len(p.parts)))
+          project = candidates[0]
+          print('Gradle project:', project)
+          with open(os.environ['GITHUB_ENV'], 'a') as f:
+              f.write('PROJECT_DIR=' + str(project) + '\n')
+          PYCODE
+          echo 'Project root contents:'
+          find "$GITHUB_WORKSPACE" -maxdepth 3 -name 'settings.gradle*' -print
       - name: Set up Java 17
         uses: actions/setup-java@v4
         with:
